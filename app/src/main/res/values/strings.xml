@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">FocusGate</string>
+    <string name="service_description">Blocks other apps until you have used your chosen app for the required time today.</string>
+</resources>

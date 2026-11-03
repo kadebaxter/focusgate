@@ -1,0 +1,9 @@
+[versions]
+agp = "9.0.0"
+playServicesLocation = "21.3.0"
+
+[libraries]
+play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }

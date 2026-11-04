@@ -76,6 +76,11 @@ class MainActivity : Activity() {
             }
         }
 
+        Ui.card(col, "Intent briefings", "See what's waiting in each intent before you open anything. Notifications stay on your phone.") {
+            if (Briefings.granted(this@MainActivity)) line("On", Ui.GOOD, 13f)
+            else button("Allow notification access") { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+        }
+
         Ui.card(col, "Wallpaper", "Use FocusGate's dark background behind Recents. Set a lock screen photo in your phone's Wallpaper settings.") {
             button("Match wallpaper to FocusGate", primary = false) { matchWallpaper() }
         }

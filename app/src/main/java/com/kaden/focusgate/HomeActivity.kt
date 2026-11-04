@@ -45,6 +45,7 @@ class HomeActivity : Activity() {
         const val EXTRA_NOTE = "note"       // why you were sent home
         const val EXTRA_RESUME = "resume"   // intent you were in before the phone locked
         const val EXTRA_BLOCK_ID = "block"  // blocked_attempts row
+        const val PLAN_FROM_HOUR = 19       // "Plan tomorrow" shows from 7pm
 
         /** Answers to "Why are you here?" when you start an intent, saved as sessions.why. */
         val REASONS = listOf("Bored" to "bored", "Needed something" to "needed", "Notification" to "notification")
@@ -71,6 +72,10 @@ class HomeActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        Briefings.onChange = {
+            window.decorView.removeCallbacks(briefingRefresh)
+            window.decorView.postDelayed(briefingRefresh, 500)
+        }
         apps = Gate.launchableApps(this)
         editor = IntentEditor(this) { render() }
         askForNotifications()
@@ -85,8 +90,16 @@ class HomeActivity : Activity() {
         render()
     }
 
+    // redraw for new notifications, but never while you're typing or a popup is open
+    private var searchField: android.widget.EditText? = null
+    private val briefingRefresh = Runnable {
+        if (hasWindowFocus() && searchField?.text.isNullOrEmpty()) render()
+    }
+
     override fun onPause() {
         super.onPause()
+        Briefings.onChange = null
+        window.decorView.removeCallbacks(briefingRefresh)
         // a block message is only for the moment you were sent here
         intent.removeExtra(EXTRA_WANTED)
         intent.removeExtra(EXTRA_NOTE)
@@ -253,6 +266,7 @@ class HomeActivity : Activity() {
         fun preview(def: IntentDef) = visible(def.apps, sort = false).take(3).joinToString(" · ") { appName(it) }.ifEmpty { "No apps yet" }
         fun sub(def: IntentDef): String {
             val usedMs = used[def.name] ?: 0L
+            if (leftMs(def) != 0L) Briefings.summary(def.apps)?.let { return it }
             return when (val left = leftMs(def)) {
                 0L -> "Done for today"
                 null -> if (usedMs >= 60_000) "${preview(def)} · ${Limits.describe(usedMs)} today" else preview(def)
@@ -295,6 +309,11 @@ class HomeActivity : Activity() {
         }
 
         col.buttonRow("${Sessions.JUST_CHECKING} · ${Sessions.JUST_CHECKING_MINUTES} min" to { justChecking(null) })
+
+        // evenings: wrap up the day by asking Muse what tomorrow needs
+        if (java.time.LocalTime.now().hour >= PLAN_FROM_HOUR && Muse.installed(this)) {
+            col.buttonRow("Plan tomorrow with Muse" to { Muse.ask(this, Muse.planTomorrow(this)) })
+        }
     }
 
     /** The pinned app, if it's still installed and in the intent. */
@@ -394,6 +413,8 @@ class HomeActivity : Activity() {
         if (limitMs != null) legend.addView(Ui.text(this, "Daily limit: ${def.dailyMinutes} min", 13f, Ui.MUTED).apply { setPadding(0, d(6), 0, 0) })
         col.addView(legend, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(12) })
 
+        briefing(col, if (session.allApps) apps.map { it.second } else session.apps)
+
         // the session's apps as an icon grid, in the intent's saved order
         val ordered = def?.apps.orEmpty().filter { it in session.apps }
         val shown = if (session.allApps) visible(apps.map { it.second })
@@ -428,6 +449,83 @@ class HomeActivity : Activity() {
             background = Ui.rounded(Ui.CARD, 20, context)
             addView(row)
         }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(8) })
+    }
+
+    /** What's waiting in this session's apps; tap one to open it right where the notification points. */
+    private fun briefing(col: LinearLayout, pkgs: Collection<String>) {
+        val list = Briefings.forApps(pkgs).take(6)
+        if (list.isEmpty()) return
+        val d = { v: Int -> Ui.dp(this, v) }
+        Ui.card(col, "Waiting for you") {
+            for (item in list) {
+                val row = LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, d(10), 0, 0)
+                    isClickable = true
+                    setOnClickListener {
+                        val sent = item.open?.let { pi -> runCatching { pi.send() }.isSuccess } ?: false
+                        if (!sent) launch(item.pkg)
+                    }
+                }
+                row.addView(ImageView(context).apply {
+                    runCatching { setImageDrawable(packageManager.getApplicationIcon(item.pkg)) }
+                }, LinearLayout.LayoutParams(d(28), d(28)).apply { marginEnd = d(12) })
+                val texts = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+                texts.addView(Ui.text(context, item.title, 14f, bold = true).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
+                if (item.text.isNotEmpty()) texts.addView(Ui.text(context, item.text, 13f, Ui.MUTED).apply {
+                    maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+                row.addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+                row.addView(Ui.text(context, ago(item.at), 12f, Ui.MUTED).apply { setPadding(d(8), 0, 0, 0) })
+                addView(row)
+                // handle it right here: reply, mark read, or clear it
+                val actions = buildList<Pair<String, () -> Unit>> {
+                    if (item.reply != null) add("Reply" to { replyTo(item) })
+                    if (item.markRead != null) add("Mark read" to {
+                        if (!Briefings.markRead(item)) toast("Couldn't mark it read")
+                    })
+                    add("Done" to { Briefings.dismiss(item); render() })
+                }
+                buttonRow(*actions.toTypedArray())
+            }
+        }
+    }
+
+    private fun replyTo(item: BriefItem) {
+        val input = android.widget.EditText(this).apply {
+            hint = "Message"
+            setTextColor(Ui.TEXT)
+            setHintTextColor(Ui.MUTED)
+            minLines = 2
+        }
+        val box = FrameLayout(this).apply {
+            setPadding(Ui.dp(this@HomeActivity, 20), Ui.dp(this@HomeActivity, 8), Ui.dp(this@HomeActivity, 20), 0)
+            addView(input)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Reply to ${item.title}")
+            .setMessage(item.text.take(200).ifEmpty { null })
+            .setView(box)
+            .setPositiveButton("Send") { _, _ ->
+                val msg = input.text.toString().trim()
+                if (msg.isEmpty()) return@setPositiveButton
+                toast(if (Briefings.reply(this, item, msg)) "Sent" else "Couldn't send. Open the app instead.")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+            .window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        input.requestFocus()
+    }
+
+    private fun ago(at: Long): String {
+        val m = (System.currentTimeMillis() - at) / 60_000
+        return when {
+            m < 1 -> "now"
+            m < 60 -> "${m}m"
+            m < 24 * 60 -> "${m / 60}h"
+            else -> "${m / (24 * 60)}d"
+        }
     }
 
     private fun appIcon(pkg: String, iconDp: Int = 56, labelSp: Float = 12f): View {
@@ -495,6 +593,7 @@ class HomeActivity : Activity() {
         Ui.card(col, "Find an app") {
             val results = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
             val search = field("Type to search")
+            searchField = search
             addView(results)
 
             fun matches(q: String) = apps
@@ -603,12 +702,13 @@ class HomeActivity : Activity() {
             .setItems(REASONS.map { it.first }.toTypedArray()) { _, i ->
                 val key = REASONS[i].second
                 if (key != "bored") return@setItems then(key)
-                AlertDialog.Builder(this)
+                val dialog = AlertDialog.Builder(this)
                     .setTitle("Fair.")
                     .setMessage("Still want to start $name, or put the phone down for a bit?")
                     .setPositiveButton("Start anyway") { _, _ -> then(key) }
                     .setNegativeButton("Not now", null)
-                    .show()
+                if (Muse.installed(this)) dialog.setNeutralButton("Something better") { _, _ -> Muse.ask(this, Muse.somethingBetter(name)) }
+                dialog.show()
             }
             .setNegativeButton("Cancel", null)
             .show()

@@ -50,8 +50,11 @@ object Gate {
     private val launchable = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 
     /** Whether [pkg] has a launcher icon, i.e. it's an app you can open yourself. Cached per package. */
+    // Not getLaunchIntentForPackage: it also accepts CATEGORY_INFO activities, which hidden system
+    // services like Pixel Display Services have even though they have no launcher icon.
     fun isLaunchable(ctx: Context, pkg: String): Boolean = launchable.getOrPut(pkg) {
-        ctx.packageManager.getLaunchIntentForPackage(pkg) != null
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(pkg)
+        ctx.packageManager.queryIntentActivities(launcher, 0).isNotEmpty()
     }
 
     // Switching to one of these counts as leaving the daily target app.

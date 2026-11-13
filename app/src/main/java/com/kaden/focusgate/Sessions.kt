@@ -65,12 +65,15 @@ object Sessions {
     /** How long the screen can be off before an "until I lock" session ends. */
     const val LOCK_GRACE_MS = 30_000L
 
-    /** Screen went off: start the grace period for an "until I lock" session. */
+    /**
+     * Screen went off: start the grace period. Timed sessions end on lock too, so time with the
+     * phone locked doesn't count against a daily limit; "Continue" picks up with what's left.
+     */
     fun screenOff(ctx: Context, onScreen: String?) {
-        val s = stored(ctx) ?: return
+        if (stored(ctx) == null) return
         // locking during navigation shouldn't end the trip: the session lasts until you lock from another app
         if (onScreen in Gate.keepSessionWhenLocked) return
-        if (!s.timed) prefs(ctx).edit().putLong("locked_at", System.currentTimeMillis()).commit()
+        prefs(ctx).edit().putLong("locked_at", System.currentTimeMillis()).commit()
     }
 
     /** Screen came back on (or the grace timer fired): end the session if the grace period ran out. */
@@ -92,7 +95,7 @@ object Sessions {
         val p = prefs(ctx)
         val s = stored(ctx) ?: return
         // the service can notice a timer late while the phone sleeps; log the real end time
-        val at = endedAt ?: if (s.timed) minOf(System.currentTimeMillis(), s.until) else System.currentTimeMillis()
+        val at = (endedAt ?: System.currentTimeMillis()).let { if (s.timed) minOf(it, s.until) else it }
         Db.get(ctx).endSession(p.getLong("row", -1), reason, at)
         p.edit().remove("name").remove("apps").remove("all").remove("until").remove("row").remove("locked_at").commit()
         Notifier.update(ctx)

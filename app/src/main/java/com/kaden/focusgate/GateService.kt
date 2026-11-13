@@ -41,11 +41,11 @@ class GateService : AccessibilityService() {
         }
     }
 
-    // Ends an "until I lock" session once the screen has been off for the whole grace period.
+    // Ends the session once the screen has been off for the whole grace period.
     // The handler can run late in deep sleep, so screen-on checks the elapsed time too.
     private val lockGraceTick = Runnable { Sessions.checkLock(this, screenOn = false) }
 
-    // "Until I lock" sessions end 30s after the screen turns off; timed ones keep running.
+    // Sessions end 30s after the screen turns off (unless you locked from navigation).
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
             when (intent.action) {
